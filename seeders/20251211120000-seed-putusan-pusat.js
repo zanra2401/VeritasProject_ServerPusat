@@ -7,7 +7,11 @@ const { v4: uuidv4, v5: uuidv5 } = require("uuid");
 // Namespace untuk UUID v5 agar konsisten antara ServerPusat & ServerDaerah
 const PUTUSAN_NAMESPACE = "6f42f5f2-7d4c-4a9c-b3d0-91f4b3c2e9aa";
 
-const uuidFromNomor = (nomor) => uuidv5((nomor || "").trim().toLowerCase(), PUTUSAN_NAMESPACE);
+const uuidFromNomor = (nomor, index = 0) => {
+  // Tambah index ke nomor supaya jika ada duplikat nomor tetap generate UUID unik
+  const seed = `${(nomor || "").trim().toLowerCase()}|row${index}`;
+  return uuidv5(seed, PUTUSAN_NAMESPACE);
+};
 
 const inputStreamPath = __dirname + "/metaPidanaUmum.csv";
 
@@ -22,6 +26,7 @@ module.exports = {
 
     await new Promise((resolve, reject) => {
       const inputStream = fs.createReadStream(inputStreamPath, "utf-8");
+      let rowIndex = 0;
 
       inputStream
         .pipe(
@@ -101,8 +106,8 @@ module.exports = {
             }
 
             // PutusanPusat
-            // Gunakan UUID deterministik berbasis nomor putusan supaya id pusat = id daerah
-            const putusanId = uuidFromNomor(nomorPutusan);
+            // Gunakan UUID deterministik berbasis nomor + row index (agar unique jika ada duplikat nomor)
+            const putusanId = uuidFromNomor(nomorPutusan, rowIndex);
             dataPutusanPusat.push({
               id: putusanId,
               id_putusan_daerah: putusanId, // sama dengan id (reference ke ServerDaerah)
@@ -121,6 +126,7 @@ module.exports = {
           } catch (err) {
             console.error("Error parsing row:", err);
           }
+          rowIndex++;
         })
         .on("end", async () => {
           try {

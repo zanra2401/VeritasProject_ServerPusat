@@ -95,23 +95,13 @@ module.exports = {
     }
   },
 
-  // Get PutusanPusat by ID dengan proxy ke ServerDaerah
+  // Get PutusanPusat by ID - coba Daerah dulu, fallback ke Pusat
   getPutusanById: async (req, res) => {
     const { id } = req.params;
     try {
-      // STEP 1: Fetch metadata dari database ServerPusat
+      // STEP 1: Fetch lembaga info dari Pusat untuk tahu URL Daerah
       const putusan = await PutusanPusat.findByPk(id, {
         include: [
-          {
-            model: Klasifikasi,
-            as: 'klasifikasi',
-            attributes: ['id', 'nama', 'total_putusan'],
-          },
-          {
-            model: Tahun,
-            as: 'tahun',
-            attributes: ['id', 'tahun', 'total_putusan'],
-          },
           {
             model: LembagaPeradilan,
             as: 'lembaga',
@@ -134,17 +124,17 @@ module.exports = {
           data: null,
         });
       }
-      
-      // STEP 2: Proxy request ke ServerDaerah untuk detail lengkap
+
+      // STEP 2: TRY FIRST - Query ke ServerDaerah untuk detail lengkap
       let daerahData = null;
       let daerahError = null;
+      let usedDaerah = false;
 
       try {
         const lembaga = putusan.lembaga;
-        console.log(lembaga.id_putusan_daerah);
         if (lembaga && lembaga.url_api && putusan.id_putusan_daerah) {
-          console.log(`[PROXY] Fetching detail from ${lembaga.nama_lembaga} - ${lembaga.url_api}`);
-          console.log(lembaga.api_key)
+          console.log(`[DAERAH FIRST] Fetching detail from ${lembaga.nama_lembaga} - ${lembaga.url_api}`);
+          
           const daerahResponse = await axios({
             method: 'GET',
             url: `${lembaga.url_api}/putusan/${putusan.id_putusan_daerah}`,
@@ -156,19 +146,78 @@ module.exports = {
           });
 
           daerahData = daerahResponse.data?.data || daerahResponse.data;
-          console.log(`[PROXY] Success - Got detail from ServerDaerah`);
+          usedDaerah = true;
+          console.log(`[DAERAH FIRST] Success - Got detail from ServerDaerah`);
         }
       } catch (err) {
-        console.log(err);
-        console.warn(`[PROXY] Failed to fetch from ServerDaerah:`, err.message);
+        console.warn(`[DAERAH FIRST] Failed to fetch from ServerDaerah, will fallback to Pusat:`, err.message);
         daerahError = err.message;
-        // Continue with Pusat data only (graceful fallback)
       }
 
-      console.log(`daerahData:`, daerahData);
-      // STEP 3: Merge data dari Pusat dan Daerah
+      // STEP 3: FALLBACK - Jika Daerah gagal, query Pusat untuk data lengkap
+      let pustakaaData = putusan;
+      if (daerahError) {
+        console.log(`[FALLBACK] Querying Pusat database for complete data`);
+        pustakaaData = await PutusanPusat.findByPk(id, {
+          include: [
+            {
+              model: Klasifikasi,
+              as: 'klasifikasi',
+              attributes: ['id', 'nama', 'total_putusan'],
+            },
+            {
+              model: Tahun,
+              as: 'tahun',
+              attributes: ['id', 'tahun', 'total_putusan'],
+            },
+            {
+              model: LembagaPeradilan,
+              as: 'lembaga',
+              attributes: ['id', 'nama_lembaga', 'jenis_lembaga', 'tingkatan'],
+              include: [
+                {
+                  model: Daerah,
+                  as: 'daerah',
+                  attributes: ['id', 'nama_daerah', 'provinsi'],
+                },
+              ],
+            },
+          ],
+        });
+      } else {
+        // Jika sukses dari Daerah, fetch lengkap dari Pusat untuk metadata
+        pustakaaData = await PutusanPusat.findByPk(id, {
+          include: [
+            {
+              model: Klasifikasi,
+              as: 'klasifikasi',
+              attributes: ['id', 'nama', 'total_putusan'],
+            },
+            {
+              model: Tahun,
+              as: 'tahun',
+              attributes: ['id', 'tahun', 'total_putusan'],
+            },
+            {
+              model: LembagaPeradilan,
+              as: 'lembaga',
+              attributes: ['id', 'nama_lembaga', 'jenis_lembaga', 'tingkatan'],
+              include: [
+                {
+                  model: Daerah,
+                  as: 'daerah',
+                  attributes: ['id', 'nama_daerah', 'provinsi'],
+                },
+              ],
+            },
+          ],
+        });
+      }
+
+      // STEP 4: Merge data
+      const pustakaaJSON = pustakaaData.toJSON();
       const mergedData = {
-        ...putusan.toJSON(),
+        ...pustakaaJSON,
         ...(daerahData && {
           amar_putusan: daerahData.amar_putusan,
           hakim_ketua: daerahData.hakim_ketua,
@@ -178,18 +227,26 @@ module.exports = {
           terdakwa: daerahData.terdakwa,
           kata_kunci_detail: daerahData.kata_kunci,
           url_dokumen: daerahData.url_dokumen,
-          jenis_putusan: daerahData.jenis_putusan || putusan.jenis_putusan,
+          catatan_amar: daerahData.catatan_amar,
+          jenis_putusan: daerahData.jenis_putusan || pustakaaData.jenis_putusan,
         }),
+        // Pastikan lembaga dengan url_api ada di response
+        lembaga: {
+          ...pustakaaJSON.lembaga,
+          url_api: putusan.lembaga?.url_api || pustakaaJSON.lembaga?.url_api,
+        }
       };
-
-
 
       return res.status(200).json({
         error: false,
         message: 'Success',
         data: mergedData,
         ...(daerahError && { 
-          warning: `Detail dari ServerDaerah tidak tersedia, menampilkan data dari ServerPusat saja` 
+          warning: `Detail dari ServerDaerah tidak tersedia, menggunakan data dari ServerPusat`,
+          source: 'pusat'
+        }),
+        ...(!daerahError && usedDaerah && {
+          source: 'daerah'
         }),
       });
     } catch (err) {
