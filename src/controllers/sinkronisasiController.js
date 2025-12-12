@@ -1,4 +1,4 @@
-const { SinkronisasiLog, LembagaPeradilan, PutusanPusat } = require('../../models');
+const { SinkronisasiLog, LembagaPeradilan, PutusanPusat, sequelize } = require('../../models');
 const axios = require('axios');
 
 module.exports = {
@@ -13,12 +13,24 @@ module.exports = {
         limit = 20 
       } = req.query;
 
+      console.log('[SYNC HISTORY] Query params:', { lembaga_id, status, tipe_operasi, page, limit });
+
       const where = {};
       if (lembaga_id) where.id_lembaga = lembaga_id;
       if (status) where.status = status;
-      if (tipe_operasi) where.tipe_operasi = tipe_operasi;
+      if (tipe_operasi) where.tipe_operasi = tipe_operasi.toUpperCase(); // Pastikan uppercase
+
+      console.log('[SYNC HISTORY] Where clause:', where);
 
       const offset = (page - 1) * limit;
+
+      // Check if table exists first
+      const tableCheck = await sequelize.query(
+        "SELECT to_regclass('public.\"SinkronisasiLog\"') as table_exists",
+        { type: sequelize.QueryTypes.SELECT }
+      );
+
+      console.log('[SYNC HISTORY] Table check:', tableCheck);
 
       const { count, rows } = await SinkronisasiLog.findAndCountAll({
         where,
@@ -27,17 +39,21 @@ module.exports = {
             model: LembagaPeradilan,
             as: 'lembaga',
             attributes: ['id', 'nama_lembaga', 'jenis_lembaga'],
+            required: false, // LEFT JOIN instead of INNER JOIN
           },
           {
             model: PutusanPusat,
             as: 'putusan',
             attributes: ['id', 'nomor_putusan'],
+            required: false, // LEFT JOIN
           },
         ],
         order: [['waktu_sync', 'DESC']],
         limit: parseInt(limit),
         offset,
       });
+
+      console.log('[SYNC HISTORY] Found:', count, 'records');
 
       return res.status(200).json({
         error: false,
@@ -47,14 +63,23 @@ module.exports = {
           total: count,
           page: parseInt(page),
           limit: parseInt(limit),
-          pages: Math.ceil(count / limit),
+          totalPages: Math.ceil(count / limit),
         },
       });
     } catch (err) {
-      console.error(err);
+      console.error('[SYNC HISTORY ERROR]', err);
+      console.error('Error name:', err.name);
+      console.error('Error message:', err.message);
+      if (err.parent) {
+        console.error('SQL Error:', err.parent.message);
+        console.error('SQL Query:', err.parent.sql);
+      }
+      console.error('Stack:', err.stack);
       return res.status(500).json({
         error: true,
         message: 'Server Error',
+        details: err.message, // Include error details for debugging
+        sql: err.parent?.message || null,
         data: null,
       });
     }

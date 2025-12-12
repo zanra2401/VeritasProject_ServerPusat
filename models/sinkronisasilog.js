@@ -76,7 +76,7 @@ module.exports = (sequelize, DataTypes) => {
     {
       sequelize,
       modelName: 'SinkronisasiLog',
-      tableName: 'SinkronisasiLog',
+      tableName: '"SinkronisasiLog"',
       createdAt: 'created_at',
       updatedAt: 'updated_at',
       timestamps: true,
